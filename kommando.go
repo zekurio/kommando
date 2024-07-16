@@ -1,4 +1,4 @@
-package commandhandler
+package kommando
 
 import (
 	"errors"
@@ -11,12 +11,13 @@ import (
 	"github.com/zekurio/kommando/store"
 )
 
-type CommandHandler struct {
+type Kommando struct {
 	s *discordgo.Session
 
 	cmds     map[string]Command
 	idCache  map[string]string
 	lockCmds sync.RWMutex
+	ctxPool  sync.Pool
 
 	options *Options
 }
@@ -35,7 +36,7 @@ type Options struct {
 	EmbedColors EmbedColors
 
 	OnSystemError  func(err error)
-	OnCommandError func(err error)
+	OnCommandError func(ctx Context, err error)
 }
 
 var defaultOptions = Options{
@@ -47,19 +48,24 @@ var defaultOptions = Options{
 	},
 
 	OnSystemError: func(err error) {
-		log.Printf("command handler - error: %s", err)
+		log.Printf("kommando - system error: %s", err)
 	},
 
-	OnCommandError: func(err error) {
-		log.Printf("command handler - command error: %s", err)
+	OnCommandError: func(ctx Context, err error) {
+		log.Printf("kommando - error in command: %s, err: %s", ctx.Command().Name(), err)
 	},
 }
 
-func New(s *discordgo.Session, options ...Options) (h *CommandHandler, err error) {
-	h = &CommandHandler{
+func New(s *discordgo.Session, options ...Options) (h *Kommando, err error) {
+	h = &Kommando{
 		cmds:    make(map[string]Command),
 		idCache: make(map[string]string),
 		s:       s,
+		ctxPool: sync.Pool{
+			New: func() interface{} {
+				return &Ctx{}
+			},
+		},
 	}
 
 	h.options = &defaultOptions
@@ -97,7 +103,7 @@ func New(s *discordgo.Session, options ...Options) (h *CommandHandler, err error
 	return
 }
 
-func (c *CommandHandler) RegisterCommands(cmds ...Command) (err error) {
+func (c *Kommando) RegisterCommands(cmds ...Command) (err error) {
 	c.lockCmds.Lock()
 	defer c.lockCmds.Unlock()
 
@@ -121,7 +127,7 @@ func (c *CommandHandler) RegisterCommands(cmds ...Command) (err error) {
 	return
 }
 
-func (c *CommandHandler) UnregisterCommands() {
+func (c *Kommando) UnregisterCommands() {
 	if c.options.CommandStore != nil {
 		return
 	}
@@ -140,7 +146,7 @@ func (c *CommandHandler) UnregisterCommands() {
 	}
 }
 
-func (c *CommandHandler) onReady(s *discordgo.Session, e *discordgo.Ready) {
+func (c *Kommando) onReady(s *discordgo.Session, e *discordgo.Ready) {
 	var (
 		cachedCommand *discordgo.ApplicationCommand
 		err           error
@@ -177,7 +183,7 @@ func (c *CommandHandler) onReady(s *discordgo.Session, e *discordgo.Ready) {
 	}
 }
 
-func (c *CommandHandler) onInteractionCreate(s *discordgo.Session, e *discordgo.InteractionCreate) {
+func (c *Kommando) onInteractionCreate(s *discordgo.Session, e *discordgo.InteractionCreate) {
 	switch e.Type {
 	case discordgo.InteractionApplicationCommand:
 		c.appCommandInteraction(s, e)
@@ -186,13 +192,33 @@ func (c *CommandHandler) onInteractionCreate(s *discordgo.Session, e *discordgo.
 	}
 }
 
-func (c *CommandHandler) appCommandInteraction(s *discordgo.Session, e *discordgo.InteractionCreate) {
+func (c *Kommando) appCommandInteraction(s *discordgo.Session, e *discordgo.InteractionCreate) {
+	c.lockCmds.RLock()
 	cmd := c.cmds[e.ApplicationCommandData().Name]
+	c.lockCmds.RUnlock()
+
 	if cmd == nil {
 		return
 	}
 
-	err := cmd.Exec(s, e.Interaction)
+	// TODO figure out how to handle dm commands
+	// not needed for now, need to implement dm check and general responce stuff
+	_, err := c.options.State.Channel(s, e.Interaction.ChannelID)
+	if err != nil {
+		c.options.OnSystemError(err)
+	}
+
+	ctx := c.ctxPool.Get().(*Ctx)
+	defer c.ctxPool.Put(ctx)
+
+	ctx.responded = false
+	ctx.kommando = c
+	ctx.session = s
+	ctx.event = e
+	ctx.cmd = cmd
+	ctx.ephemeral = false
+
+	err = cmd.Exec(ctx)
 	if err != nil {
 		c.options.OnSystemError(err)
 	}

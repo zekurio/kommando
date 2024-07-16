@@ -1,28 +1,28 @@
-package commandhandler
+package kommando
 
 import "github.com/bwmarrin/discordgo"
 
 // Context holds our data from the interaction neatly in one object
 type Context interface {
+	Responder
+
 	Channel() (channel *discordgo.Channel, err error)
 
 	Guild() (guild *discordgo.Guild, err error)
 
 	User() (user *discordgo.User, err error)
 
-	Interaction() (interaction *discordgo.Interaction, err error)
+	Options() []*discordgo.ApplicationCommandInteractionDataOption
 
-	Options() (options []*discordgo.ApplicationCommandInteractionDataOption, err error)
+	Command() Command
 
-	SlashCommand() (command SlashCommand, err error)
+	SlashCommand() SlashCommand
 
 	// TODO work on other command types
 }
 
 // Responder handles responding and follow up messages
 type Responder interface {
-	Context
-
 	Respond(r *discordgo.InteractionResponse) (err error)
 
 	RespondMessage(content string) (err error)
@@ -31,53 +31,60 @@ type Responder interface {
 
 	RespondError(content, title string) (err error)
 
-	// TODO follow up messages
+	GetSession() *discordgo.Session
+
+	GetEvent() *discordgo.InteractionCreate
+
+	GetKommando() *Kommando
+
+	GetEphemeral() bool
+
+	SetEphemeral(v bool)
 }
 
 type Ctx struct {
-	session *discordgo.Session
-	event   *discordgo.InteractionCreate
+	responder
 
-	kommando *CommandHandler
-	cmd        Command
+	cmd Command
 }
 
-var _ Context = &Ctx{}
+var _ Context = (*Ctx)(nil)
 
 func (c *Ctx) Channel() (channel *discordgo.Channel, err error) {
-	return c.kommando.options.State.Channel(c.session, c.event.Interaction.ChannelID)
+	return c.kommando.options.State.Channel(c.session, c.event.ChannelID)
 }
 
 func (c *Ctx) Guild() (guild *discordgo.Guild, err error) {
-	return c.kommando.options.State.Guild(c.session, c.event.Interaction.GuildID)
+	return c.kommando.options.State.Guild(c.session, c.event.GuildID)
 }
 
 func (c *Ctx) User() (user *discordgo.User, err error) {
-	return c.kommando.options.State.User(c.session, c.event.Interaction.Member.User.ID)
+	return c.kommando.options.State.User(c.session, c.event.User.ID)
 }
 
-func (c *Ctx) Interaction() (interaction *discordgo.Interaction, err error) {
-	return c.event.Interaction, nil
+func (c *Ctx) Options() []*discordgo.ApplicationCommandInteractionDataOption {
+	return c.event.ApplicationCommandData().Options
 }
 
-func (c *Ctx) Options() (options []*discordgo.ApplicationCommandInteractionDataOption, err error) {
-	return c.event.Interaction.ApplicationCommandData().Options, nil
+func (c *Ctx) Command() Command {
+	return c.cmd
 }
 
-func (c *Ctx) SlashCommand() (command SlashCommand, err error) {
-	return c.cmd.(SlashCommand), nil
+func (c *Ctx) SlashCommand() SlashCommand {
+	return c.cmd.(SlashCommand)
 }
 
-type Res struct {
-	Ctx
-
+type responder struct {
 	responded bool
+	kommando  *Kommando
+	session   *discordgo.Session
+	event     *discordgo.InteractionCreate
 	ephemeral bool
 }
 
-var _ Responder = &Res{}
+var _ Responder = (*responder)(nil)
 
-func (c *Res) messageFlags(p discordgo.MessageFlags) (f discordgo.MessageFlags) {
+func (c *responder) messageFlags(p discordgo.MessageFlags) (f discordgo.MessageFlags) {
 	f = p
 	if c.ephemeral {
 		f |= discordgo.MessageFlagsEphemeral
@@ -85,24 +92,36 @@ func (c *Res) messageFlags(p discordgo.MessageFlags) (f discordgo.MessageFlags) 
 	return
 }
 
-func (r *Res) Respond(rsp *discordgo.InteractionResponse) (err error) {
+func (r *responder) Respond(res *discordgo.InteractionResponse) (err error) {
+	if res.Data == nil {
+		res.Data = new(discordgo.InteractionResponseData)
+	}
+
+	res.Data.Flags = r.messageFlags(res.Data.Flags)
+
 	if r.responded {
-		return nil
+		if res == nil || res.Data == nil {
+			return
+		}
+		_, err = r.session.InteractionResponseEdit(r.event.Interaction, &discordgo.WebhookEdit{
+			Content:         &res.Data.Content,
+			Embeds:          &res.Data.Embeds,
+			Components:      &res.Data.Components,
+			Files:           res.Data.Files,
+			AllowedMentions: res.Data.AllowedMentions,
+		})
+		if err != nil {
+			return
+		}
+	} else {
+		err = r.session.InteractionRespond(r.event.Interaction, res)
+		r.responded = err == nil
 	}
 
-	rsp.Data.Flags = r.messageFlags(rsp.Data.Flags)
-
-	err = r.session.InteractionRespond(r.event.Interaction, rsp)
-	if err != nil {
-		return err
-	}
-
-	r.responded = true
-
-	return nil
+	return
 }
 
-func (r *Res) RespondMessage(content string) (err error) {
+func (r *responder) RespondMessage(content string) (err error) {
 	return r.Respond(&discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -111,7 +130,7 @@ func (r *Res) RespondMessage(content string) (err error) {
 	})
 }
 
-func (r *Res) RespondEmbed(embed *discordgo.MessageEmbed) (err error) {
+func (r *responder) RespondEmbed(embed *discordgo.MessageEmbed) (err error) {
 	return r.Respond(&discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -120,10 +139,30 @@ func (r *Res) RespondEmbed(embed *discordgo.MessageEmbed) (err error) {
 	})
 }
 
-func (r *Res) RespondError(content, title string) (err error) {
+func (r *responder) RespondError(content, title string) (err error) {
 	return r.RespondEmbed(&discordgo.MessageEmbed{
 		Title:       title,
 		Description: content,
-		Color:       r.Ctx.kommando.options.EmbedColors.Error,
+		Color:       r.kommando.options.EmbedColors.Error,
 	})
+}
+
+func (r *responder) GetSession() *discordgo.Session {
+	return r.session
+}
+
+func (r *responder) GetEvent() *discordgo.InteractionCreate {
+	return r.event
+}
+
+func (r *responder) GetKommando() *Kommando {
+	return r.kommando
+}
+
+func (r *responder) GetEphemeral() bool {
+	return r.ephemeral
+}
+
+func (r *responder) SetEphemeral(v bool) {
+	r.ephemeral = v
 }
