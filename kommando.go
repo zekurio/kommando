@@ -14,10 +14,11 @@ import (
 type Kommando struct {
 	s *discordgo.Session
 
-	cmds     map[string]Command
-	idCache  map[string]string
-	lockCmds sync.RWMutex
-	ctxPool  sync.Pool
+	cmds       map[string]Command
+	idCache    map[string]string
+	lockCmds   sync.RWMutex
+	ctxPool    sync.Pool
+	subCtxPool sync.Pool
 
 	options *Options
 }
@@ -65,6 +66,9 @@ func New(s *discordgo.Session, options ...Options) (h *Kommando, err error) {
 			New: func() interface{} {
 				return &Ctx{}
 			},
+		},
+		subCtxPool: sync.Pool{
+			New: func() interface{} { return &SubCommandCtx{} },
 		},
 	}
 
@@ -201,9 +205,7 @@ func (c *Kommando) appCommandInteraction(s *discordgo.Session, e *discordgo.Inte
 		return
 	}
 
-	// TODO figure out how to handle dm commands
-	// not needed for now, need to implement dm check and general responce stuff
-	_, err := c.options.State.Channel(s, e.Interaction.ChannelID)
+	ch, err := c.options.State.Channel(s, e.Interaction.ChannelID)
 	if err != nil {
 		c.options.OnSystemError(err)
 	}
@@ -217,6 +219,13 @@ func (c *Kommando) appCommandInteraction(s *discordgo.Session, e *discordgo.Inte
 	ctx.event = e
 	ctx.cmd = cmd
 	ctx.ephemeral = false
+
+	if ch.Type == discordgo.ChannelTypeDM || ch.Type == discordgo.ChannelTypeGroupDM {
+		if goCmd, ok := cmd.(GuildOnly); ok || goCmd.GuildOnly() {
+			c.options.OnCommandError(ctx, errors.New("command only available in guild"))
+			return
+		}
+	}
 
 	err = cmd.Exec(ctx)
 	if err != nil {
