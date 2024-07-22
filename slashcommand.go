@@ -9,3 +9,7 @@ type SlashCommand interface {
 
 	Options() []*discordgo.ApplicationCommandOption
 }
+
+type GuildOnly interface {
+	GuildOnly() bool
+}

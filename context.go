@@ -84,9 +84,9 @@ type responder struct {
 
 var _ Responder = (*responder)(nil)
 
-func (c *responder) messageFlags(p discordgo.MessageFlags) (f discordgo.MessageFlags) {
+func (r *responder) messageFlags(p discordgo.MessageFlags) (f discordgo.MessageFlags) {
 	f = p
-	if c.ephemeral {
+	if r.ephemeral {
 		f |= discordgo.MessageFlagsEphemeral
 	}
 	return
@@ -165,4 +165,66 @@ func (r *responder) GetEphemeral() bool {
 
 func (r *responder) SetEphemeral(v bool) {
 	r.ephemeral = v
+}
+
+// TODO handling sub commands
+// https://discord.com/developers/docs/interactions/application-commands#subcommands-and-subcommand-groups
+
+type SubCommandContext interface {
+	Context
+
+	GetSubCommandName() string
+}
+
+type subCommandCtx struct {
+	Context
+
+	subCommandName string
+}
+
+func (c *subCommandCtx) GetSubCommandName() string {
+	return c.subCommandName
+}
+
+func (c *subCommandCtx) Options() []*discordgo.ApplicationCommandOption {
+	var results []*discordgo.ApplicationCommandOption
+
+	for _, o := range c.Options() {
+		if o.Name == c.subCommandName {
+			results = append(results, o)
+		}
+	}
+
+	return results
+}
+
+func (c *subCommandCtx) HandleSubCommands(handler []CommandHandler) (err error) {
+	return handleSubCommands(c, handler)
+}
+
+func handleSubCommands(c *subCommandCtx, handler []CommandHandler) (err error) {
+	options := c.Options()[0]
+	for _, h := range handler {
+		if options.Type != h.Type() || options.Name != h.OptionName() {
+			continue
+		}
+
+		// TODO handle subcommands context in kommando
+		break
+	}
+
+	return err
+}
+
+//var _ SubCommandContext = (*subCommandCtx)(nil)
+
+type CommandHandler interface {
+	Type() discordgo.ApplicationCommandOptionType
+	OptionName() string
+	RunHandler(ctx SubCommandContext) error
+}
+
+type SubCommandHandler struct {
+	Name string // Name is defined by the options
+	Run  func(ctx SubCommandContext) error
 }
