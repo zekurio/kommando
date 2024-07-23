@@ -2,7 +2,6 @@ package kommando
 
 import (
 	"fmt"
-
 	"github.com/bwmarrin/discordgo"
 )
 

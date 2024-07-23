@@ -8,7 +8,6 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/zekurio/kommando/state"
-	"github.com/zekurio/kommando/store"
 )
 
 type Kommando struct {
@@ -31,8 +30,6 @@ type EmbedColors struct {
 
 type Options struct {
 	State state.State
-
-	CommandStore store.CommandStore
 
 	EmbedColors EmbedColors
 
@@ -68,7 +65,7 @@ func New(s *discordgo.Session, options ...Options) (h *Kommando, err error) {
 			},
 		},
 		subCtxPool: sync.Pool{
-			New: func() interface{} { return &SubCommandCtx{} },
+			New: func() interface{} { return &subCommandCtx{} },
 		},
 	}
 
@@ -76,10 +73,6 @@ func New(s *discordgo.Session, options ...Options) (h *Kommando, err error) {
 
 	if len(options) > 0 {
 		o := options[0]
-
-		if o.CommandStore != nil {
-			h.options.CommandStore = o.CommandStore
-		}
 
 		if o.State != nil {
 			h.options.State = o.State
@@ -91,13 +84,6 @@ func New(s *discordgo.Session, options ...Options) (h *Kommando, err error) {
 
 		if o.OnCommandError != nil {
 			h.options.OnCommandError = o.OnCommandError
-		}
-	}
-
-	if h.options.CommandStore != nil {
-		h.idCache, err = h.options.CommandStore.Load()
-		if err != nil {
-			return
 		}
 	}
 
@@ -132,10 +118,6 @@ func (c *Kommando) RegisterCommands(cmds ...Command) (err error) {
 }
 
 func (c *Kommando) UnregisterCommands() {
-	if c.options.CommandStore != nil {
-		return
-	}
-
 	self, err := c.options.State.SelfUser(c.s)
 	if err != nil {
 		return
@@ -154,7 +136,7 @@ func (c *Kommando) onReady(s *discordgo.Session, e *discordgo.Ready) {
 	var (
 		cachedCommand *discordgo.ApplicationCommand
 		err           error
-		update        = []*discordgo.ApplicationCommand{}
+		update        []*discordgo.ApplicationCommand
 	)
 
 	for name, cmd := range c.cmds {
@@ -174,13 +156,6 @@ func (c *Kommando) onReady(s *discordgo.Session, e *discordgo.Ready) {
 
 	if len(update) > 0 {
 		_, err = s.ApplicationCommandBulkOverwrite(e.User.ID, "", update)
-		if err != nil {
-			c.options.OnSystemError(err)
-		}
-	}
-
-	if c.options.CommandStore != nil {
-		err = c.options.CommandStore.Store(c.idCache)
 		if err != nil {
 			c.options.OnSystemError(err)
 		}

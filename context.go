@@ -14,6 +14,8 @@ type Context interface {
 
 	Options() []*discordgo.ApplicationCommandInteractionDataOption
 
+	HandleSubCommands(handler ...CommandHandler) (err error)
+
 	Command() Command
 
 	SlashCommand() SlashCommand
@@ -64,6 +66,10 @@ func (c *Ctx) User() (user *discordgo.User, err error) {
 
 func (c *Ctx) Options() []*discordgo.ApplicationCommandInteractionDataOption {
 	return c.event.ApplicationCommandData().Options
+}
+
+func (c *Ctx) HandleSubCommands(handler ...CommandHandler) (err error) {
+	return handleSubCommands(c, handler)
 }
 
 func (c *Ctx) Command() Command {
@@ -176,20 +182,22 @@ type SubCommandContext interface {
 	GetSubCommandName() string
 }
 
-type SubCommandCtx struct {
+type subCommandCtx struct {
 	Context
 
 	subCommandName string
 }
 
-func (c *SubCommandCtx) GetSubCommandName() string {
+var _ SubCommandContext = (*subCommandCtx)(nil)
+
+func (c *subCommandCtx) GetSubCommandName() string {
 	return c.subCommandName
 }
 
-func (c *SubCommandCtx) Options() []*discordgo.ApplicationCommandInteractionDataOption {
+func (c *subCommandCtx) Options() []*discordgo.ApplicationCommandInteractionDataOption {
 	var results []*discordgo.ApplicationCommandInteractionDataOption
 
-	for _, o := range c.Options() {
+	for _, o := range c.Context.Options() {
 		if o.Name == c.subCommandName {
 			results = append(results, o)
 		}
@@ -198,19 +206,19 @@ func (c *SubCommandCtx) Options() []*discordgo.ApplicationCommandInteractionData
 	return results
 }
 
-func (c *SubCommandCtx) HandleSubCommands(handler ...CommandHandler) (err error) {
+func (c *subCommandCtx) HandleSubCommands(handler ...CommandHandler) (err error) {
 	return handleSubCommands(c, handler)
 }
 
-func handleSubCommands(c *SubCommandCtx, handler []CommandHandler) (err error) {
+func handleSubCommands(c Context, handler []CommandHandler) (err error) {
 	options := c.Options()[0]
 	for _, h := range handler {
 		if options.Type != h.Type() || options.Name != h.OptionName() {
 			continue
 		}
 
-		ctx := c.GetKommando().subCtxPool.Get().(*SubCommandCtx)
-		ctx.Context = c.Context
+		ctx := c.GetKommando().subCtxPool.Get().(*subCommandCtx)
+		ctx.Context = c
 		ctx.subCommandName = h.OptionName()
 		err = h.RunHandler(ctx)
 		c.GetKommando().subCtxPool.Put(ctx)
@@ -219,8 +227,6 @@ func handleSubCommands(c *SubCommandCtx, handler []CommandHandler) (err error) {
 
 	return err
 }
-
-var _ SubCommandContext = (*SubCommandCtx)(nil)
 
 type CommandHandler interface {
 	Type() discordgo.ApplicationCommandOptionType
